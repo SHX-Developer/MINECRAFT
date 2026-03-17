@@ -1,0 +1,18 @@
+[project]
+name = "minecraft-ursina"
+version = "0.1.0"
+description = "Minecraft-like 3D game prototype on Python + Ursina"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "ursina==7.0.0",
+  "panda3d==1.10.13"
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
