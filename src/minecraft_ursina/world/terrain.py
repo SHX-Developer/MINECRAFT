@@ -23,8 +23,8 @@ BLOCK_FALLBACK_COLORS = {
     "wood": color.rgb(126, 98, 68),
     "leaves": color.rgb(74, 147, 71),
 }
-TREE_TRUNK_HEIGHT = 4
-TREE_SPAWN_CHANCE = 0.025
+TREE_TRUNK_HEIGHT = 5
+TREE_SPAWN_CHANCE = 0.010
 
 FACES = (
     (
@@ -260,13 +260,18 @@ class ChunkManager:
 
     def _prepare_mountains(self) -> None:
         half = self.size // 2 - 4
-        count = max(10, self.size // 7)
+        count = max(12, self.size // 6)
         self.mountain_centers = []
         for _ in range(count):
             mx = self.rng.uniform(-half, half)
             mz = self.rng.uniform(-half, half)
-            peak_height = self.rng.uniform(6.0, 13.5)
-            radius = self.rng.uniform(6.0, 13.5)
+            # Blend low hills and high mountains to keep terrain varied.
+            if self.rng.random() < 0.65:
+                peak_height = self.rng.uniform(3.5, 9.5)
+                radius = self.rng.uniform(7.0, 16.0)
+            else:
+                peak_height = self.rng.uniform(10.0, 20.0)
+                radius = self.rng.uniform(5.0, 11.0)
             self.mountain_centers.append((mx, mz, peak_height, radius))
 
     def _chunk_key(self, position: GridPos) -> ChunkKey:
@@ -388,6 +393,9 @@ class ChunkManager:
         return True
 
     def _try_place_tree(self, x: int, ground_y: int, z: int) -> None:
+        # Trees spawn only on the base grass plateau (not hills/mountains).
+        if ground_y != self._base_y:
+            return
         if self._stable_noise_01(x, z, salt=11) >= TREE_SPAWN_CHANCE:
             return
         # Secondary gate reduces clustering and keeps trees more natural.
@@ -435,8 +443,8 @@ class ChunkManager:
                 full_depth = self.base_depth + 8 + extra_depth
                 bottom_y = self._base_y - full_depth
 
-                stone_patch = math.sin(x * 0.41 + z * 0.37 + self.seed) > 0.96
-                surface_block = "stone" if mountain_boost > 5.5 or stone_patch else "grass"
+                # Keep plains grassy; stone surfaces are allowed only in mountain zones.
+                surface_block = "stone" if mountain_boost > 5.5 else "grass"
 
                 for y in range(bottom_y, surface_y + 1):
                     if (x, y, z) in self.blocks:

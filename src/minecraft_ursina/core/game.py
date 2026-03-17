@@ -1,4 +1,5 @@
 from pathlib import Path
+import random
 import shutil
 
 from minecraft_ursina.core.settings import (
@@ -56,12 +57,15 @@ def run_game() -> None:
         Audio,
         Entity,
         Ursina,
+        Vec3,
         application,
         camera,
         color,
+        destroy,
         held_keys,
         invoke,
         mouse,
+        scene,
         time,
         window,
     )
@@ -89,6 +93,8 @@ def run_game() -> None:
         def __init__(self) -> None:
             super().__init__()
             project_root = Path(__file__).resolve().parents[3]
+            runtime_sounds_dir = project_root / "sounds"
+            runtime_sounds_dir.mkdir(parents=True, exist_ok=True)
             runtime_dir = project_root / "textures"
             runtime_sky_path = runtime_dir / SKY_TEXTURE_FILE
             source_sky_path = (
@@ -147,8 +153,6 @@ def run_game() -> None:
             self.background_music: Audio | None = None
             if music_path:
                 try:
-                    runtime_sounds_dir = project_root / "sounds"
-                    runtime_sounds_dir.mkdir(parents=True, exist_ok=True)
                     runtime_music_path = runtime_sounds_dir / music_path.name
                     if not runtime_music_path.exists():
                         shutil.copy2(music_path, runtime_music_path)
@@ -163,31 +167,80 @@ def run_game() -> None:
                 except Exception:
                     self.background_music = None
 
+            self.footstep_walk_sound = "step_walk"
+            self.footstep_run_sound = "step_run"
+            self.block_action_sound_stems = {
+                "grass": "break_grass",
+                "dirt": "break_dirt",
+                "stone": "break_stone",
+                "plank": "break_plank",
+                "wood": "break_wood",
+                "leaves": "break_leaves",
+            }
+
             self.terrain = Terrain(
                 size=TERRAIN_SIZE,
                 base_depth=TERRAIN_BASE_DEPTH,
                 chunk_size=CHUNK_SIZE,
             )
             self.terrain.generate_hills(base_y=0)
-            self.player = PlayerController(position=(0, 10, 0))
+            self.player = PlayerController(position=(0, 10, 0), on_footstep=self._on_player_footstep)
             self.player.camera_pivot.rotation_x = -30
             self.player.cursor.visible = False
             self.placeable_blocks = ["grass", "dirt", "stone", "plank", "wood", "leaves"]
+            self.block_display_colors = {
+                "grass": color.rgb(60, 170, 70),
+                "dirt": color.rgb(130, 92, 60),
+                "stone": color.rgb(150, 150, 150),
+                "plank": color.rgb(178, 136, 86),
+                "wood": color.rgb(126, 98, 68),
+                "leaves": color.rgb(74, 147, 71),
+            }
             self.selected_block_index = 0
             self.hud = HUD()
             self.hud.build(
                 camera.ui,
                 slot_textures=[TEXTURE_REFS.get(block_type) for block_type in self.placeable_blocks],
                 slot_fallback_colors=[
-                    color.rgb(60, 170, 70),
-                    color.rgb(130, 92, 60),
-                    color.rgb(150, 150, 150),
-                    color.rgb(178, 136, 86),
-                    color.rgb(126, 98, 68),
-                    color.rgb(74, 147, 71),
+                    self.block_display_colors["grass"],
+                    self.block_display_colors["dirt"],
+                    self.block_display_colors["stone"],
+                    self.block_display_colors["plank"],
+                    self.block_display_colors["wood"],
+                    self.block_display_colors["leaves"],
                 ],
             )
+            self.hand_root = Entity(
+                parent=camera,
+                model="cube",
+                color=color.rgb(238, 186, 128),
+                position=(0.63, -0.58, 1.03),
+                rotation=(24, -38, -8),
+                scale=(0.20, 0.34, 0.20),
+                always_on_top=True,
+            )
+            self.hand_root.setShaderOff()
+            self.hand_root.setLightOff()
+            self.held_block_anchor = Entity(
+                parent=camera,
+                position=(0.53, -0.34, 1.00),
+                rotation=(8, -35, 8),
+                always_on_top=True,
+            )
+            self.held_block_entity = Entity(
+                parent=self.held_block_anchor,
+                model="cube",
+                position=(0, 0, 0),
+                scale=(0.23, 0.23, 0.23),
+                color=color.white,
+                texture="white_cube",
+                always_on_top=True,
+            )
+            self.held_block_entity.setShaderOff()
+            self.held_block_entity.setLightOff()
+            self._sync_held_block_visual()
             self._lod_timer = 0.0
+            self._breaking_blocks: set[tuple[int, int, int]] = set()
             self._last_lod_player_pos = (self.player.x, self.player.y, self.player.z)
             self._refresh_lod(player_position=self._last_lod_player_pos)
 
@@ -219,6 +272,90 @@ def run_game() -> None:
             py = round(self.player.y)
             pz = round(self.player.z)
             return position in {(px, py, pz), (px, py - 1, pz)}
+
+        def _sync_held_block_visual(self) -> None:
+            block_type = self.placeable_blocks[self.selected_block_index]
+            texture_ref = TEXTURE_REFS.get(block_type)
+            self.held_block_entity.texture = texture_ref or "white_cube"
+            self.held_block_entity.color = (
+                color.white if texture_ref else self.block_display_colors.get(block_type, color.white)
+            )
+
+        def _play_sfx(self, stem: str, volume: float = 0.35) -> None:
+            try:
+                snd = Audio(stem, autoplay=True, loop=False, volume=volume)
+                invoke(destroy, snd, delay=1.5)
+            except Exception:
+                pass
+
+        def _on_player_footstep(self, sprinting: bool) -> None:
+            step_stem = self.footstep_run_sound if sprinting else self.footstep_walk_sound
+            self._play_sfx(step_stem, volume=0.22 if sprinting else 0.18)
+
+        def _break_block_with_animation(self, position: tuple[int, int, int]) -> None:
+            if position in self._breaking_blocks or not self.terrain.has_block(position):
+                return
+            self._breaking_blocks.add(position)
+
+            block_type = self.terrain.blocks.get(position, "stone")
+            texture_ref = TEXTURE_REFS.get(block_type)
+            self._play_sfx(self.block_action_sound_stems.get(block_type, "break_stone"), volume=0.30)
+            particle_color = (
+                color.white if texture_ref else self.block_display_colors.get(block_type, color.white)
+            )
+            center = Vec3(position[0], position[1], position[2])
+            for _ in range(14):
+                spawn_offset = Vec3(
+                    random.uniform(-0.28, 0.28),
+                    random.uniform(-0.20, 0.25),
+                    random.uniform(-0.28, 0.28),
+                )
+                piece = Entity(
+                    parent=scene,
+                    model="cube",
+                    position=center + spawn_offset,
+                    texture=texture_ref or "white_cube",
+                    color=particle_color,
+                    scale=random.uniform(0.06, 0.12),
+                    shader=None,
+                )
+                piece.setShaderOff()
+                piece.setLightOff()
+                piece.animate_position(
+                    piece.position
+                    + Vec3(
+                        random.uniform(-0.95, 0.95),
+                        random.uniform(0.30, 0.85),
+                        random.uniform(-0.95, 0.95),
+                    ),
+                    duration=0.17,
+                )
+                piece.animate_position(
+                    piece.position
+                    + Vec3(
+                        random.uniform(-1.2, 1.2),
+                        random.uniform(-1.5, -0.7),
+                        random.uniform(-1.2, 1.2),
+                    ),
+                    duration=0.25,
+                    delay=0.17,
+                )
+                piece.animate_scale(0.01, duration=0.30, delay=0.12)
+                piece.animate_rotation(
+                    (
+                        random.uniform(240, 520),
+                        random.uniform(240, 520),
+                        random.uniform(240, 520),
+                    ),
+                    duration=0.35,
+                )
+                invoke(destroy, piece, delay=0.40)
+
+            def _finish_break() -> None:
+                self.terrain.remove_block(position)
+                self._breaking_blocks.discard(position)
+
+            invoke(_finish_break, delay=0.03)
 
         def input(self, key: str) -> None:
             movement_aliases = {
@@ -254,6 +391,7 @@ def run_game() -> None:
                     return
                 self.selected_block_index = selected_index
                 self.hud.set_selected_slot(self.selected_block_index)
+                self._sync_held_block_visual()
                 return
 
             hit = self._look_block()
@@ -261,7 +399,7 @@ def run_game() -> None:
                 return
 
             if key == "left mouse down":
-                self.terrain.remove_block(hit.position)
+                self._break_block_with_animation(hit.position)
                 return
 
             if key == "right mouse down":
@@ -276,6 +414,7 @@ def run_game() -> None:
                     return
                 block_type = self.placeable_blocks[self.selected_block_index]
                 self.terrain.add_block(place_pos, block_type)
+                self._play_sfx(self.block_action_sound_stems.get(block_type, "break_stone"), volume=0.24)
 
         def update(self) -> None:
             if self.sky_dome:
