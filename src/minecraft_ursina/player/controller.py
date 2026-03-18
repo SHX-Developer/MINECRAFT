@@ -1,3 +1,5 @@
+import math
+
 from ursina import Vec2, Vec3, camera, clamp, held_keys, mouse, raycast, scene, time
 from ursina.prefabs.first_person_controller import FirstPersonController
 
@@ -5,9 +7,11 @@ from ursina.prefabs.first_person_controller import FirstPersonController
 class PlayerController(FirstPersonController):
     """First-person player with Minecraft-like movement bounds."""
 
-    def __init__(self, on_footstep=None, **kwargs) -> None:
+    def __init__(self, on_footstep=None, on_fall_damage=None, is_water_at=None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.on_footstep = on_footstep
+        self.on_fall_damage = on_fall_damage
+        self.is_water_at = is_water_at
         self.walk_speed = 5.0
         self.sprint_speed = 9.0
         self.speed = self.walk_speed
@@ -27,7 +31,9 @@ class PlayerController(FirstPersonController):
         # Manual jump physics for smooth movement.
         self.mouse_sensitivity = Vec2(40, 40)
         self.gravity = 28.0
-        self.jump_velocity = 8.5
+        # Slightly above 1 block to reliably clear a full block with discrete physics steps.
+        self.jump_height_blocks = 1.28
+        self.jump_velocity = math.sqrt(2.0 * self.gravity * self.jump_height_blocks)
         self.vertical_velocity = 0.0
         self.grounded = False
         self.body_radius = 0.36
@@ -35,6 +41,12 @@ class PlayerController(FirstPersonController):
         self.traverse_target = scene
         self.ignore_list = [self]
         self._step_timer = 0.0
+        self.in_water = False
+        self.water_speed_multiplier = 0.62
+        self.water_sink_speed = 1.35
+        self.water_rise_speed = 3.40
+        self.water_force = 6.80
+        self._fall_peak_y: float | None = None
 
         # If spawned inside terrain, move to nearest valid floor.
         floor_ray = raycast(
@@ -89,7 +101,20 @@ class PlayerController(FirstPersonController):
             return float("inf")
         return ground_ray.distance - self.height
 
+    def _is_body_in_water(self) -> bool:
+        if not callable(self.is_water_at):
+            return False
+        gx = math.floor(self.x)
+        gz = math.floor(self.z)
+        for sample_y in (self.y + 0.12, self.y + 0.95, self.y + 1.65):
+            gy = math.floor(sample_y)
+            if self.is_water_at((gx, gy, gz)):
+                return True
+        return False
+
     def update(self) -> None:
+        was_grounded = self.grounded
+        frame_start_y = self.y
         self._time_since_last_forward_press += time.dt
         forward_held = held_keys["w"] > 0
         if forward_held and not self._was_forward_held:
@@ -99,6 +124,10 @@ class PlayerController(FirstPersonController):
         if not forward_held:
             self.sprint_active = False
         self._was_forward_held = forward_held
+        self.in_water = self._is_body_in_water()
+        if self.in_water:
+            self.sprint_active = False
+            self._fall_peak_y = None
         self.speed = self.sprint_speed if self.sprint_active else self.walk_speed
         target_fov = self.sprint_fov if self.sprint_active else self.base_fov
         blend = min(1.0, time.dt * self.fov_lerp_speed)
@@ -114,6 +143,8 @@ class PlayerController(FirstPersonController):
         ).normalized()
 
         move_speed = self.speed * time.dt
+        if self.in_water:
+            move_speed *= self.water_speed_multiplier
         moved_horizontally = False
         blocked_horizontally = False
         if self.direction.length() > 0:
@@ -140,16 +171,30 @@ class PlayerController(FirstPersonController):
             self.sprint_active = False
             self.speed = self.walk_speed
 
-        # Detect whether we are standing on the ground.
         ground_distance = self._ground_distance()
-        self.grounded = ground_distance <= 0.08 and self.vertical_velocity <= 0
-
-        if self.grounded:
-            if ground_distance > 0.001:
-                self.y -= min(ground_distance, self.step_height)
-            self.vertical_velocity = max(0.0, self.vertical_velocity)
+        if self.in_water:
+            self.grounded = False
+            self.vertical_velocity = max(-self.water_sink_speed, min(self.vertical_velocity, self.water_rise_speed))
+            if held_keys["space"]:
+                self.vertical_velocity = min(
+                    self.water_rise_speed,
+                    self.vertical_velocity + (self.water_force * time.dt),
+                )
+            else:
+                self.vertical_velocity = max(
+                    -self.water_sink_speed,
+                    self.vertical_velocity - (self.water_force * 0.55 * time.dt),
+                )
         else:
-            self.vertical_velocity -= self.gravity * time.dt
+            # Detect whether we are standing on the ground.
+            self.grounded = ground_distance <= 0.08 and self.vertical_velocity <= 0
+
+            if self.grounded:
+                if ground_distance > 0.001:
+                    self.y -= min(ground_distance, self.step_height)
+                self.vertical_velocity = max(0.0, self.vertical_velocity)
+            else:
+                self.vertical_velocity -= self.gravity * time.dt
 
         dy = self.vertical_velocity * time.dt
         if dy > 0:
@@ -190,12 +235,29 @@ class PlayerController(FirstPersonController):
             self.vertical_velocity = 0.0
             self.grounded = True
 
+        # Track highest point while airborne for fall-damage calculation.
+        if not self.in_water and not self.grounded:
+            if was_grounded or self._fall_peak_y is None:
+                self._fall_peak_y = frame_start_y
+            else:
+                self._fall_peak_y = max(self._fall_peak_y, self.y)
+
+        if not self.in_water and (not was_grounded) and self.grounded:
+            peak_y = self._fall_peak_y if self._fall_peak_y is not None else self.y
+            fall_height = max(0.0, peak_y - self.y)
+            damage = max(0, int(math.floor(fall_height)) - 2)
+            if damage > 0 and callable(self.on_fall_damage):
+                self.on_fall_damage(damage, fall_height)
+            self._fall_peak_y = None
+        elif self.in_water:
+            self._fall_peak_y = None
+
         # Hold-space auto jump.
-        if held_keys["space"] and self.grounded:
+        if held_keys["space"] and self.grounded and not self.in_water:
             self.jump()
 
         # Footstep cadence while grounded and moving.
-        if self.grounded and moved_horizontally:
+        if self.grounded and moved_horizontally and not self.in_water:
             step_interval = 0.30 if self.sprint_active else 0.44
             self._step_timer += time.dt
             if self._step_timer >= step_interval:
@@ -206,7 +268,7 @@ class PlayerController(FirstPersonController):
             self._step_timer = 0.0
 
     def input(self, key: str) -> None:
-        if key == "space":
+        if key == "space" and not self.in_water:
             self.jump()
 
     def jump(self) -> None:

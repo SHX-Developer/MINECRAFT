@@ -4,11 +4,15 @@ import shutil
 
 from ursina import Entity, color
 from minecraft_ursina.core.settings import (
+    BEDROCK_TEXTURE_FILE,
+    BRICK_TEXTURE_FILE,
     DIRT_TEXTURE_FILE,
     GRASS_TEXTURE_FILE,
     LEAVES_TEXTURE_FILE,
     PLANK_TEXTURE_FILE,
+    SAND_TEXTURE_FILE,
     STONE_TEXTURE_FILE,
+    WATER_TEXTURE_FILE,
     WOOD_TEXTURE_FILE,
 )
 
@@ -105,6 +109,10 @@ TEXTURE_REFS = {
     "plank": _texture_ref(PLANK_TEXTURE_FILE),
     "wood": _texture_ref(WOOD_TEXTURE_FILE),
     "leaves": _texture_ref(LEAVES_TEXTURE_FILE),
+    "sand": _texture_ref(SAND_TEXTURE_FILE),
+    "brick": _texture_ref(BRICK_TEXTURE_FILE),
+    "bedrock": _texture_ref(BEDROCK_TEXTURE_FILE),
+    "water": _texture_ref(WATER_TEXTURE_FILE),
 }
 BROKEN_TEXTURE_TYPES: set[str] = set()
 
@@ -131,6 +139,12 @@ class Block(Entity):
             block_color = color.rgb(140, 140, 140)
         elif block_type == "dirt":
             block_color = color.rgb(118, 84, 56)
+        elif block_type == "sand":
+            block_color = color.rgb(196, 186, 122)
+        elif block_type == "brick":
+            block_color = color.rgb(170, 75, 67)
+        elif block_type == "bedrock":
+            block_color = color.rgb(82, 82, 82)
         else:
             block_color = color.rgb(62, 168, 76)
 

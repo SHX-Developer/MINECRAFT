@@ -11,13 +11,17 @@ STONE_TEXTURE_FILE = "block_stone.png"
 PLANK_TEXTURE_FILE = "block_plank.png"
 WOOD_TEXTURE_FILE = "block_wood.png"
 LEAVES_TEXTURE_FILE = "block_leaves.png"
+WATER_TEXTURE_FILE = "water.png"
+SAND_TEXTURE_FILE = "block_sand.png"
+BRICK_TEXTURE_FILE = "block_brick.png"
+BEDROCK_TEXTURE_FILE = "block_bedrock.png"
 
 BGM_FILE = "background_music.mp3"
 BGM_VOLUME = 0.6
 
 # Performance tuning
 CHUNK_SIZE = 16
-TERRAIN_SIZE = 192
+TERRAIN_SIZE = 200
 TERRAIN_BASE_DEPTH = 4
 RENDER_DISTANCE_BLOCKS = 16
 COLLIDER_DISTANCE_BLOCKS = 7

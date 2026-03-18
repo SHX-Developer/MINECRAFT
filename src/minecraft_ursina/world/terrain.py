@@ -14,7 +14,7 @@ from minecraft_ursina.world.block import TEXTURE_REFS
 GridPos = Tuple[int, int, int]
 ChunkKey = Tuple[int, int]
 
-BLOCK_TYPES = ("grass", "dirt", "stone", "plank", "wood", "leaves")
+BLOCK_TYPES = ("grass", "dirt", "stone", "plank", "wood", "leaves", "sand", "brick", "bedrock")
 BLOCK_FALLBACK_COLORS = {
     "grass": color.rgb(62, 168, 76),
     "dirt": color.rgb(118, 84, 56),
@@ -22,9 +22,29 @@ BLOCK_FALLBACK_COLORS = {
     "plank": color.rgb(178, 136, 86),
     "wood": color.rgb(126, 98, 68),
     "leaves": color.rgb(74, 147, 71),
+    "sand": color.rgb(196, 186, 122),
+    "brick": color.rgb(170, 75, 67),
+    "bedrock": color.rgb(82, 82, 82),
 }
+WATER_COLOR = color.rgba(180, 220, 255, 175)
 TREE_TRUNK_HEIGHT = 5
 TREE_SPAWN_CHANCE = 0.010
+LAKE_MIN_RADIUS = 2.4
+LAKE_MAX_RADIUS = 4.2
+LAKE_MIN_DEPTH = 2.0
+LAKE_MAX_DEPTH = 3.0
+RIVER_MIN_HALF_WIDTH = 1.4
+RIVER_MAX_HALF_WIDTH = 2.4
+VERY_HIGH_MOUNTAIN_CHANCE = 0.13
+VERY_HIGH_MOUNTAIN_MIN_HEIGHT = 38.0
+VERY_HIGH_MOUNTAIN_MAX_HEIGHT = 72.0
+SURFACE_OFFSET_MAX = 46
+PUDDLE_MIN_RADIUS_X = 1.6
+PUDDLE_MAX_RADIUS_X = 4.0
+PUDDLE_MIN_RADIUS_Z = 1.3
+PUDDLE_MAX_RADIUS_Z = 3.5
+SAND_AROUND_WATER_CHANCE = 0.22
+BEDROCK_DEPTH_OFFSET = 10
 
 FACES = (
     (
@@ -64,6 +84,30 @@ FACES = (
 class BlockHit:
     position: GridPos
     normal: GridPos
+
+
+@dataclass
+class MountainCenter:
+    x: float
+    z: float
+    peak_height: float
+    radius: float
+    shape: str
+    sharpness: float
+    ridge_dir_x: float
+    ridge_dir_z: float
+    ridge_strength: float
+    elongation: float
+
+
+@dataclass
+class PuddleCenter:
+    x: float
+    z: float
+    radius_x: float
+    radius_z: float
+    cos_angle: float
+    sin_angle: float
 
 
 def _build_texture_atlas() -> tuple[str | None, dict[str, tuple[float, float, float, float]]]:
@@ -138,14 +182,17 @@ class Chunk:
         self.manager = manager
         self.key = key
         self.entity: Entity | None = None
+        self.water_entity: Entity | None = None
         self.collider_enabled = False
 
     def destroy(self) -> None:
-        if not self.entity:
-            return
-        self.manager.entity_to_chunk.pop(self.entity, None)
-        destroy(self.entity)
-        self.entity = None
+        if self.entity:
+            self.manager.entity_to_chunk.pop(self.entity, None)
+            destroy(self.entity)
+            self.entity = None
+        if self.water_entity:
+            destroy(self.water_entity)
+            self.water_entity = None
 
     def set_collider_enabled(self, enabled: bool) -> None:
         self.collider_enabled = enabled
@@ -154,9 +201,7 @@ class Chunk:
 
     def rebuild(self) -> None:
         positions = self.manager.chunk_blocks.get(self.key, set())
-        if not positions:
-            self.destroy()
-            return
+        water_positions = self.manager.chunk_water_blocks.get(self.key, set())
 
         vertices: list[tuple[float, float, float]] = []
         triangles: list[tuple[int, int, int]] = []
@@ -188,35 +233,88 @@ class Chunk:
                 triangles.append((base, base + 1, base + 2))
                 triangles.append((base, base + 2, base + 3))
 
-        if not triangles:
-            self.destroy()
-            return
-
-        mesh = Mesh(
-            vertices=vertices,
-            triangles=triangles,
-            uvs=uvs,
-            normals=normals,
-            colors=colors,
-            mode="triangle",
-        )
-
-        texture_ref = self.manager.atlas_texture_ref or "white_cube"
-        if self.entity is None:
-            self.entity = Entity(
-                model=mesh,
-                texture=texture_ref,
-                collider="mesh" if self.collider_enabled else None,
-                shader=None,
-                double_sided=True,
+        if triangles:
+            mesh = Mesh(
+                vertices=vertices,
+                triangles=triangles,
+                uvs=uvs,
+                normals=normals,
+                colors=colors,
+                mode="triangle",
             )
-            self.entity.setShaderOff()
-            self.entity.setLightOff()
-            self.manager.entity_to_chunk[self.entity] = self.key
-        else:
-            self.entity.model = mesh
-            self.entity.texture = texture_ref
-            self.entity.collider = "mesh" if self.collider_enabled else None
+
+            texture_ref = self.manager.atlas_texture_ref or "white_cube"
+            if self.entity is None:
+                self.entity = Entity(
+                    model=mesh,
+                    texture=texture_ref,
+                    collider="mesh" if self.collider_enabled else None,
+                    shader=None,
+                    double_sided=True,
+                )
+                self.entity.setShaderOff()
+                self.entity.setLightOff()
+                self.manager.entity_to_chunk[self.entity] = self.key
+            else:
+                self.entity.model = mesh
+                self.entity.texture = texture_ref
+                self.entity.collider = "mesh" if self.collider_enabled else None
+        elif self.entity:
+            self.manager.entity_to_chunk.pop(self.entity, None)
+            destroy(self.entity)
+            self.entity = None
+
+        water_vertices: list[tuple[float, float, float]] = []
+        water_triangles: list[tuple[int, int, int]] = []
+        water_uvs: list[tuple[float, float]] = []
+        water_normals: list[tuple[float, float, float]] = []
+        water_colors: list = []
+
+        for x, y, z in water_positions:
+            face_uvs = ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0))
+            for (nx, ny, nz), face_vertices, face_normal in FACES:
+                neighbor_pos = (x + nx, y + ny, z + nz)
+                if neighbor_pos in self.manager.water_blocks or neighbor_pos in self.manager.blocks:
+                    continue
+
+                base = len(water_vertices)
+                for uv, (vx, vy, vz) in zip(face_uvs, face_vertices):
+                    water_vertices.append((x + vx, y + vy, z + vz))
+                    water_uvs.append(uv)
+                    water_normals.append(face_normal)
+                    water_colors.append(WATER_COLOR)
+                water_triangles.append((base, base + 1, base + 2))
+                water_triangles.append((base, base + 2, base + 3))
+
+        if water_triangles:
+            water_mesh = Mesh(
+                vertices=water_vertices,
+                triangles=water_triangles,
+                uvs=water_uvs,
+                normals=water_normals,
+                colors=water_colors,
+                mode="triangle",
+            )
+
+            water_texture = self.manager.water_texture_ref or "white_cube"
+            if self.water_entity is None:
+                self.water_entity = Entity(
+                    model=water_mesh,
+                    texture=water_texture,
+                    collider=None,
+                    shader=None,
+                    double_sided=True,
+                )
+                self.water_entity.setShaderOff()
+                self.water_entity.setLightOff()
+                self.water_entity.setTransparency(True)
+            else:
+                self.water_entity.model = water_mesh
+                self.water_entity.texture = water_texture
+            self.water_entity.color = WATER_COLOR
+        elif self.water_entity:
+            destroy(self.water_entity)
+            self.water_entity = None
 
 
 class ChunkManager:
@@ -228,25 +326,40 @@ class ChunkManager:
         self.chunk_size = max(16, chunk_size)
         self.seed = seed if seed is not None else random.randint(1, 1_000_000_000)
         self.rng = random.Random(self.seed)
-        self.mountain_centers: list[tuple[float, float, float, float]] = []
+        self.mountain_centers: list[MountainCenter] = []
 
         self.blocks: Dict[GridPos, str] = {}
         self.chunk_blocks: Dict[ChunkKey, set[GridPos]] = {}
+        self.water_blocks: set[GridPos] = set()
+        self.chunk_water_blocks: Dict[ChunkKey, set[GridPos]] = {}
         self.generated_chunks: set[ChunkKey] = set()
         self.loaded_chunks: Dict[ChunkKey, Chunk] = {}
         self.entity_to_chunk: dict[Entity, ChunkKey] = {}
         self.dirty_chunks: set[ChunkKey] = set()
+        self.lake_centers: list[tuple[float, float, float, float]] = []
+        self.puddle_centers: list[PuddleCenter] = []
+        self.river_tiles: set[tuple[int, int]] = set()
 
         self._base_y = 0
+        self._water_level = 0
+        self._bedrock_y = -BEDROCK_DEPTH_OFFSET
         self._mode = "hills"
         self.atlas_texture_ref, self.atlas_uv_rects = _build_texture_atlas()
+        self.water_texture_ref = TEXTURE_REFS.get("water")
         self._prepare_mountains()
+        self._prepare_lakes()
+        self._prepare_puddles()
+        self._prepare_rivers()
 
     def reset(self, mode: str, base_y: int) -> None:
         self._mode = mode
         self._base_y = base_y
+        self._water_level = base_y
+        self._bedrock_y = base_y - (self.base_depth + BEDROCK_DEPTH_OFFSET)
         self.blocks.clear()
         self.chunk_blocks.clear()
+        self.water_blocks.clear()
+        self.chunk_water_blocks.clear()
         self.generated_chunks.clear()
         self.dirty_chunks.clear()
 
@@ -256,6 +369,9 @@ class ChunkManager:
         self.entity_to_chunk.clear()
 
         self._prepare_mountains()
+        self._prepare_lakes()
+        self._prepare_puddles()
+        self._prepare_rivers()
         self._load_all_chunks()
 
     def _prepare_mountains(self) -> None:
@@ -265,14 +381,114 @@ class ChunkManager:
         for _ in range(count):
             mx = self.rng.uniform(-half, half)
             mz = self.rng.uniform(-half, half)
-            # Blend low hills and high mountains to keep terrain varied.
-            if self.rng.random() < 0.65:
-                peak_height = self.rng.uniform(3.5, 9.5)
-                radius = self.rng.uniform(7.0, 16.0)
-            else:
+            # Keep medium relief common, tall mountains rarer, and very high peaks occasional.
+            roll = self.rng.random()
+            if roll < VERY_HIGH_MOUNTAIN_CHANCE:
+                peak_height = self.rng.uniform(VERY_HIGH_MOUNTAIN_MIN_HEIGHT, VERY_HIGH_MOUNTAIN_MAX_HEIGHT)
+                radius = self.rng.uniform(4.0, 7.6)
+                shape = "cone" if self.rng.random() < 0.55 else "ridge"
+                sharpness = self.rng.uniform(1.0, 1.45)
+            elif roll < 0.47:
                 peak_height = self.rng.uniform(10.0, 20.0)
-                radius = self.rng.uniform(5.0, 11.0)
-            self.mountain_centers.append((mx, mz, peak_height, radius))
+                radius = self.rng.uniform(5.5, 11.5)
+                shape = self.rng.choice(("cone", "ridge"))
+                sharpness = self.rng.uniform(0.7, 1.15)
+            else:
+                peak_height = self.rng.uniform(3.5, 10.0)
+                radius = self.rng.uniform(7.0, 16.5)
+                shape = "dome"
+                sharpness = self.rng.uniform(0.6, 1.05)
+
+            ridge_angle = self.rng.uniform(0.0, math.tau)
+            ridge_strength = self.rng.uniform(0.25, 0.75) if shape == "ridge" else 0.0
+            elongation = self.rng.uniform(1.0, 1.8) if shape != "dome" else self.rng.uniform(1.0, 1.25)
+            self.mountain_centers.append(
+                MountainCenter(
+                    x=mx,
+                    z=mz,
+                    peak_height=peak_height,
+                    radius=radius,
+                    shape=shape,
+                    sharpness=sharpness,
+                    ridge_dir_x=math.cos(ridge_angle),
+                    ridge_dir_z=math.sin(ridge_angle),
+                    ridge_strength=ridge_strength,
+                    elongation=elongation,
+                )
+            )
+
+    def _prepare_lakes(self) -> None:
+        half = self.size // 2 - 6
+        count = max(2, self.size // 90)
+        self.lake_centers = []
+        for _ in range(count):
+            lx = self.rng.uniform(-half, half)
+            lz = self.rng.uniform(-half, half)
+            radius = self.rng.uniform(LAKE_MIN_RADIUS, LAKE_MAX_RADIUS)
+            depth = self.rng.uniform(LAKE_MIN_DEPTH, LAKE_MAX_DEPTH)
+            self.lake_centers.append((lx, lz, radius, depth))
+
+    def _prepare_puddles(self) -> None:
+        half = self.size // 2 - 6
+        count = max(10, self.size // 16)
+        self.puddle_centers = []
+        for _ in range(count):
+            px = self.rng.uniform(-half, half)
+            pz = self.rng.uniform(-half, half)
+            radius_x = self.rng.uniform(PUDDLE_MIN_RADIUS_X, PUDDLE_MAX_RADIUS_X)
+            radius_z = self.rng.uniform(PUDDLE_MIN_RADIUS_Z, PUDDLE_MAX_RADIUS_Z)
+            angle = self.rng.uniform(0.0, math.tau)
+            self.puddle_centers.append(
+                PuddleCenter(
+                    x=px,
+                    z=pz,
+                    radius_x=radius_x,
+                    radius_z=radius_z,
+                    cos_angle=math.cos(angle),
+                    sin_angle=math.sin(angle),
+                )
+            )
+
+    def _prepare_rivers(self) -> None:
+        half = self.size // 2
+        count = max(2, self.size // 80)
+        self.river_tiles = set()
+
+        for _ in range(count):
+            horizontal = self.rng.random() < 0.5
+            width = self.rng.uniform(RIVER_MIN_HALF_WIDTH, RIVER_MAX_HALF_WIDTH)
+            if horizontal:
+                base = self.rng.uniform(-half * 0.7, half * 0.7)
+                amp = self.rng.uniform(self.size * 0.05, self.size * 0.13)
+                freq = self.rng.uniform(0.7, 1.8)
+                phase = self.rng.uniform(0.0, math.tau)
+                for x in range(-half, half):
+                    t = (x + half) / max(1, self.size - 1)
+                    z_center = base + (amp * math.sin((t * math.tau * freq) + phase))
+                    z_center += (amp * 0.35) * math.sin((t * math.tau * (freq * 2.1)) + phase * 0.6)
+                    self._paint_river_disk(x, int(round(z_center)), width)
+            else:
+                base = self.rng.uniform(-half * 0.7, half * 0.7)
+                amp = self.rng.uniform(self.size * 0.05, self.size * 0.13)
+                freq = self.rng.uniform(0.7, 1.8)
+                phase = self.rng.uniform(0.0, math.tau)
+                for z in range(-half, half):
+                    t = (z + half) / max(1, self.size - 1)
+                    x_center = base + (amp * math.sin((t * math.tau * freq) + phase))
+                    x_center += (amp * 0.35) * math.sin((t * math.tau * (freq * 2.1)) + phase * 0.6)
+                    self._paint_river_disk(int(round(x_center)), z, width)
+
+    def _paint_river_disk(self, cx: int, cz: int, half_width: float) -> None:
+        radius = int(math.ceil(half_width))
+        radius_sq = half_width * half_width
+        for ox in range(-radius, radius + 1):
+            for oz in range(-radius, radius + 1):
+                if (ox * ox + oz * oz) > radius_sq:
+                    continue
+                x = cx + ox
+                z = cz + oz
+                if self._within_bounds(x, z):
+                    self.river_tiles.add((x, z))
 
     def _chunk_key(self, position: GridPos) -> ChunkKey:
         x, _, z = position
@@ -333,15 +549,32 @@ class ChunkManager:
 
     def _mountain_boost(self, x: int, z: int) -> float:
         boost = 0.0
-        for mx, mz, peak_height, radius in self.mountain_centers:
-            dx = x - mx
-            dz = z - mz
-            dist_sq = dx * dx + dz * dz
-            radius_sq = radius * radius
+        for mountain in self.mountain_centers:
+            dx = x - mountain.x
+            dz = z - mountain.z
+
+            # Rotate to local mountain axis and scale sideways for elongated shapes.
+            parallel = (dx * mountain.ridge_dir_x) + (dz * mountain.ridge_dir_z)
+            perp = (-dx * mountain.ridge_dir_z) + (dz * mountain.ridge_dir_x)
+            scaled_perp = perp / max(1e-4, mountain.elongation)
+            dist_sq = (parallel * parallel) + (scaled_perp * scaled_perp)
+            radius_sq = mountain.radius * mountain.radius
             if dist_sq >= radius_sq:
                 continue
+
             influence = 1.0 - (dist_sq / radius_sq)
-            boost += influence * peak_height
+            if mountain.shape == "cone":
+                shape_profile = influence ** (0.65 + (0.30 * mountain.sharpness))
+            elif mountain.shape == "ridge":
+                ridge_wave = abs(
+                    math.sin((parallel / max(1.0, mountain.radius)) * math.pi * (1.25 + mountain.sharpness))
+                )
+                ridge_mod = (1.0 - mountain.ridge_strength) + (mountain.ridge_strength * (0.55 + 0.45 * ridge_wave))
+                shape_profile = (influence ** (1.05 + (0.45 * mountain.sharpness))) * ridge_mod
+            else:
+                shape_profile = influence ** (1.55 + (0.80 * mountain.sharpness))
+
+            boost += shape_profile * mountain.peak_height
         return boost
 
     def _stable_noise_01(self, x: int, z: int, salt: int = 0) -> float:
@@ -355,6 +588,47 @@ class ChunkManager:
         value = (value * 1274126177) & 0xFFFFFFFF
         value ^= value >> 16
         return value / 0xFFFFFFFF
+
+    def _is_lake_tile(self, x: int, z: int) -> bool:
+        for lx, lz, radius, depth in self.lake_centers:
+            dx = x - lx
+            dz = z - lz
+            dist_sq = dx * dx + dz * dz
+            radius_sq = radius * radius
+            if dist_sq >= radius_sq:
+                continue
+            influence = 1.0 - (dist_sq / radius_sq)
+            local_depth = influence * depth
+            if local_depth >= 0.35:
+                return True
+        return False
+
+    def _is_puddle_tile(self, x: int, z: int) -> bool:
+        for puddle in self.puddle_centers:
+            dx = x - puddle.x
+            dz = z - puddle.z
+            local_x = (dx * puddle.cos_angle) + (dz * puddle.sin_angle)
+            local_z = (-dx * puddle.sin_angle) + (dz * puddle.cos_angle)
+            ellipse = ((local_x * local_x) / (puddle.radius_x * puddle.radius_x)) + (
+                (local_z * local_z) / (puddle.radius_z * puddle.radius_z)
+            )
+            if ellipse > 1.0:
+                continue
+
+            # Light jitter keeps borders natural while preserving round/oval look.
+            edge_jitter = 0.88 + (self._stable_noise_01(x, z, salt=211) * 0.24)
+            if ellipse <= edge_jitter:
+                return True
+        return False
+
+    def _is_near_surface_water(self, x: int, z: int, radius: int = 1) -> bool:
+        for ox in range(-radius, radius + 1):
+            for oz in range(-radius, radius + 1):
+                nx = x + ox
+                nz = z + oz
+                if self._is_lake_tile(nx, nz) or self._is_puddle_tile(nx, nz) or (nx, nz) in self.river_tiles:
+                    return True
+        return False
 
     def _tree_placements(self, x: int, ground_y: int, z: int) -> list[tuple[GridPos, str]]:
         trunk_top_y = ground_y + TREE_TRUNK_HEIGHT
@@ -414,6 +688,13 @@ class ChunkManager:
         chunk_key = self._chunk_key(position)
         self.chunk_blocks.setdefault(chunk_key, set()).add(position)
 
+    def _set_water_data(self, position: GridPos) -> None:
+        if position in self.blocks:
+            return
+        self.water_blocks.add(position)
+        chunk_key = self._chunk_key(position)
+        self.chunk_water_blocks.setdefault(chunk_key, set()).add(position)
+
     def _generate_chunk_data(self, key: ChunkKey) -> None:
         if key in self.generated_chunks:
             return
@@ -434,22 +715,50 @@ class ChunkManager:
 
                 mountain_boost = self._mountain_boost(x, z)
                 surface_offset = int(round(self._base_height_noise(x, z) + mountain_boost))
-                surface_offset = max(0, min(surface_offset, 18))
-                surface_y = self._base_y + surface_offset
+                surface_offset = max(0, min(surface_offset, SURFACE_OFFSET_MAX))
+                original_surface_y = self._base_y + surface_offset
+                surface_y = original_surface_y
+                is_lake_tile = self._is_lake_tile(x, z)
+                is_puddle_tile = self._is_puddle_tile(x, z)
+                is_river_tile = (x, z) in self.river_tiles
+                can_place_surface_water = (
+                    mountain_boost < 2.6
+                    and original_surface_y <= (self._base_y + 1)
+                )
+                has_surface_water = can_place_surface_water and (is_lake_tile or is_puddle_tile or is_river_tile)
+                if has_surface_water:
+                    channel_depth = 1 if is_puddle_tile else 2
+                    if is_lake_tile:
+                        channel_depth = max(channel_depth, 3)
+                    if is_river_tile and self._stable_noise_01(x, z, salt=101) > 0.66:
+                        channel_depth += 1
+                    surface_y = max(self._base_y - 5, surface_y - channel_depth)
 
-                # Build solid terrain columns so mountains are not hollow.
-                # Depth grows with mountain height and keeps stone inside.
-                extra_depth = int(mountain_boost * 0.45)
-                full_depth = self.base_depth + 8 + extra_depth
-                bottom_y = self._base_y - full_depth
+                # Always keep a full bedrock floor at the very bottom of the world.
+                bottom_y = self._bedrock_y
 
-                # Keep plains grassy; stone surfaces are allowed only in mountain zones.
-                surface_block = "stone" if mountain_boost > 5.5 else "grass"
+                # Plains are mostly grass. Sand appears mostly near rivers/lakes/puddles.
+                near_surface_water = self._is_near_surface_water(x, z, radius=1)
+                sand_by_water = (
+                    mountain_boost < 2.2
+                    and original_surface_y <= (self._base_y + 1)
+                    and near_surface_water
+                    and self._stable_noise_01(x, z, salt=405) < SAND_AROUND_WATER_CHANCE
+                )
+
+                if mountain_boost > 5.5:
+                    surface_block = "stone"
+                elif sand_by_water:
+                    surface_block = "sand"
+                else:
+                    surface_block = "grass"
 
                 for y in range(bottom_y, surface_y + 1):
                     if (x, y, z) in self.blocks:
                         continue
-                    if y == surface_y:
+                    if y == bottom_y:
+                        block_type = "bedrock"
+                    elif y == surface_y:
                         block_type = surface_block
                     elif y >= surface_y - 3:
                         block_type = "dirt"
@@ -457,7 +766,11 @@ class ChunkManager:
                         block_type = "stone"
                     self._set_block_data((x, y, z), block_type)
 
-                if surface_block == "grass":
+                if has_surface_water and surface_y < self._water_level:
+                    for y in range(surface_y + 1, self._water_level + 1):
+                        self._set_water_data((x, y, z))
+
+                if surface_block == "grass" and not has_surface_water:
                     grass_surfaces.append((x, surface_y, z))
 
         for x, surface_y, z in grass_surfaces:
@@ -504,6 +817,13 @@ class ChunkManager:
                 chunk.rebuild()
 
     def add_block(self, position: GridPos, block_type: str = "grass") -> None:
+        if position in self.water_blocks:
+            self.water_blocks.discard(position)
+            water_chunk_positions = self.chunk_water_blocks.get(self._chunk_key(position))
+            if water_chunk_positions:
+                water_chunk_positions.discard(position)
+                if not water_chunk_positions:
+                    self.chunk_water_blocks.pop(self._chunk_key(position), None)
         self._set_block_data(position, block_type)
         self._mark_chunk_and_neighbors_dirty(position)
         self._rebuild_dirty_chunks()
@@ -524,6 +844,9 @@ class ChunkManager:
 
     def has_block(self, position: GridPos) -> bool:
         return position in self.blocks
+
+    def has_water(self, position: GridPos) -> bool:
+        return position in self.water_blocks
 
     def update(
         self,
@@ -657,6 +980,9 @@ class Terrain:
 
     def has_block(self, position: GridPos) -> bool:
         return self.manager.has_block(position=position)
+
+    def is_water(self, position: GridPos) -> bool:
+        return self.manager.has_water(position=position)
 
     def update_lod(
         self,
