@@ -23,11 +23,8 @@ function platformIsMobile(platform) {
   return (
     platform === "ios" ||
     platform === "android" ||
-    platform === "android_x" ||
-    platform === "weba" ||
-    platform === "webk"
+    platform === "android_x"
   );
-  // (Note: webk / weba are Telegram Web on phones; tdesktop / macos are desktop.)
 }
 
 /**
@@ -131,8 +128,10 @@ export function shouldUseMobileControls() {
     return false;
   }
   const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
-  const touch = ("ontouchstart" in window) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 0);
+  const fine = window.matchMedia && window.matchMedia("(any-pointer: fine)").matches;
+  const touch = navigator.maxTouchPoints && navigator.maxTouchPoints > 0;
+  const mobileUserAgent = /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent || "");
   // Don't trigger on hybrid laptops that have both a mouse and a touchscreen —
   // require BOTH coarse pointer AND touch (real phones / tablets).
-  return Boolean(coarse && touch);
+  return Boolean(touch && coarse && (!fine || mobileUserAgent));
 }

@@ -159,7 +159,6 @@ export class Game {
     this.input = new InputManager(this.canvas);
     const useTouch = this.input.isUsingTouchControls() || shouldUseMobileControls();
     document.body.classList.toggle("touch-controls", useTouch);
-    document.body.classList.toggle("force-landscape-left", useTouch);
 
     const { renderer, scene } = createRenderer(this.canvas);
     this.renderer = renderer;
@@ -914,6 +913,5 @@ export class Game {
       this.mobileControls.destroy();
     }
     document.body.classList.remove("touch-controls");
-    document.body.classList.remove("force-landscape-left");
   }
 }

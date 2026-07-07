@@ -37,15 +37,15 @@ function detectTouchDevice() {
   }
   if (window.Telegram && window.Telegram.WebApp) {
     const platform = (window.Telegram.WebApp.platform || "").toLowerCase();
-    if (platform && platform !== "tdesktop" && platform !== "macos" && platform !== "weba" && platform !== "web") {
+    if (platform === "ios" || platform === "android" || platform === "android_x") {
       return true;
     }
   }
-  return (
-    ("ontouchstart" in window) ||
-    (navigator.maxTouchPoints && navigator.maxTouchPoints > 0) ||
-    (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
-  );
+  const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+  const fine = window.matchMedia && window.matchMedia("(any-pointer: fine)").matches;
+  const touch = navigator.maxTouchPoints && navigator.maxTouchPoints > 0;
+  const mobileUserAgent = /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent || "");
+  return Boolean(touch && coarse && (!fine || mobileUserAgent));
 }
 
 export class InputManager {

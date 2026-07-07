@@ -47,23 +47,6 @@ body.telegram-webapp {
   color: var(--hud-text);
 }
 
-body.touch-controls.force-landscape-left {
-  background: #05070a;
-}
-
-@media (orientation: portrait) {
-  body.touch-controls.force-landscape-left #game-canvas,
-  body.touch-controls.force-landscape-left #hud {
-    position: fixed;
-    left: 50%;
-    top: 50%;
-    width: 100vh;
-    height: 100vw;
-    transform: translate(-50%, -50%) rotate(-90deg);
-    transform-origin: center center;
-  }
-}
-
 #underwater-overlay {
   position: absolute;
   inset: 0;

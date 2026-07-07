@@ -43,6 +43,7 @@ export class MobileControls {
 
     this.breakButtonHeld = false;
     this.sprintToggled = false;
+    this.orientationRequested = false;
 
     this._touchHandlers = [];
 
@@ -93,14 +94,6 @@ export class MobileControls {
   }
 
   getControlPoint(event) {
-    const forceLandscapeLeft = document.body.classList.contains("force-landscape-left");
-    const portraitViewport = window.innerHeight > window.innerWidth;
-    if (forceLandscapeLeft && portraitViewport) {
-      return {
-        x: window.innerHeight - event.clientY,
-        y: event.clientX,
-      };
-    }
     return {
       x: event.clientX,
       y: event.clientY,
@@ -180,6 +173,19 @@ export class MobileControls {
     this._add(this.root, "touchmove", (e) => e.preventDefault(), { passive: false });
   }
 
+  requestLandscape() {
+    if (this.orientationRequested) {
+      return;
+    }
+    this.orientationRequested = true;
+    try {
+      const orientation = screen.orientation;
+      if (orientation && typeof orientation.lock === "function") {
+        orientation.lock("landscape-primary").catch(() => {});
+      }
+    } catch (e) {}
+  }
+
   _add(el, type, handler, options) {
     el.addEventListener(type, handler, options);
     this._touchHandlers.push({ el, type, handler, options });
@@ -190,6 +196,7 @@ export class MobileControls {
       return;
     }
     event.preventDefault();
+    this.requestLandscape();
     const point = this.getControlPoint(event);
     this.joystickActive = true;
     this.joystickPointerId = event.pointerId;
@@ -214,6 +221,7 @@ export class MobileControls {
       return;
     }
     event.preventDefault();
+    this.requestLandscape();
     const point = this.getControlPoint(event);
     this.lookPointerId = event.pointerId;
     this.lookLastX = point.x;
@@ -292,6 +300,7 @@ export class MobileControls {
   onButtonDown(event, code) {
     event.preventDefault();
     event.stopPropagation();
+    this.requestLandscape();
     this.input.setVirtualKey(code, true);
     event.currentTarget.classList.add("active");
   }
