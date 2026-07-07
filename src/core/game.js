@@ -156,11 +156,15 @@ export class Game {
   }
 
   async init() {
+    this.input = new InputManager(this.canvas);
+    const useTouch = this.input.isUsingTouchControls() || shouldUseMobileControls();
+    document.body.classList.toggle("touch-controls", useTouch);
+    document.body.classList.toggle("force-landscape-left", useTouch);
+
     const { renderer, scene } = createRenderer(this.canvas);
     this.renderer = renderer;
     this.scene = scene;
     this.camera = createCamera();
-    this.input = new InputManager(this.canvas);
 
     this.atlasTexture = await loadAtlasTexture(this.atlasUrl);
     this.atlasTexture.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy());
@@ -296,14 +300,12 @@ export class Game {
 
     // Mount on-screen touch controls when the input manager reports a touch
     // device or the page is opened from a mobile Telegram client.
-    const useTouch = this.input.isUsingTouchControls() || shouldUseMobileControls();
     if (useTouch) {
       this.mobileControls = new MobileControls({
         container: this.hudElement,
         input: this.input,
         onToggleInventory: () => this.toggleInventoryFromKey(),
       });
-      document.body.classList.add("touch-controls");
     }
 
     this.setupAudioUnlock();
@@ -911,5 +913,7 @@ export class Game {
     if (this.mobileControls) {
       this.mobileControls.destroy();
     }
+    document.body.classList.remove("touch-controls");
+    document.body.classList.remove("force-landscape-left");
   }
 }

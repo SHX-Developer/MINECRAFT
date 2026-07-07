@@ -92,6 +92,21 @@ export class MobileControls {
     document.body.classList.add("mobile-controls-enabled");
   }
 
+  getControlPoint(event) {
+    const forceLandscapeLeft = document.body.classList.contains("force-landscape-left");
+    const portraitViewport = window.innerHeight > window.innerWidth;
+    if (forceLandscapeLeft && portraitViewport) {
+      return {
+        x: window.innerHeight - event.clientY,
+        y: event.clientX,
+      };
+    }
+    return {
+      x: event.clientX,
+      y: event.clientY,
+    };
+  }
+
   bind() {
     // Joystick (left half)
     this._add(this.moveArea, "pointerdown", (e) => this.onJoystickDown(e));
@@ -175,16 +190,16 @@ export class MobileControls {
       return;
     }
     event.preventDefault();
+    const point = this.getControlPoint(event);
     this.joystickActive = true;
     this.joystickPointerId = event.pointerId;
-    const rect = this.moveArea.getBoundingClientRect();
     // Centre stick on the touch point instead of the screen corner.
-    this.joystickOrigin.x = event.clientX;
-    this.joystickOrigin.y = event.clientY;
-    this.joystickBase.style.left = `${event.clientX - rect.left}px`;
-    this.joystickBase.style.top = `${event.clientY - rect.top}px`;
+    this.joystickOrigin.x = point.x;
+    this.joystickOrigin.y = point.y;
+    this.joystickBase.style.left = `${point.x}px`;
+    this.joystickBase.style.top = `${point.y}px`;
     this.joystickBase.classList.add("active");
-    this.updateJoystick(event.clientX, event.clientY);
+    this.updateJoystick(point.x, point.y);
     try {
       this.moveArea.setPointerCapture(event.pointerId);
     } catch (e) {}
@@ -199,11 +214,12 @@ export class MobileControls {
       return;
     }
     event.preventDefault();
+    const point = this.getControlPoint(event);
     this.lookPointerId = event.pointerId;
-    this.lookLastX = event.clientX;
-    this.lookLastY = event.clientY;
-    this.lookStartX = event.clientX;
-    this.lookStartY = event.clientY;
+    this.lookLastX = point.x;
+    this.lookLastY = point.y;
+    this.lookStartX = point.x;
+    this.lookStartY = point.y;
     this.lookMoved = false;
     this.lookStartTime = performance.now();
     try {
@@ -213,14 +229,16 @@ export class MobileControls {
 
   onPointerMove(event) {
     if (event.pointerId === this.joystickPointerId) {
-      this.updateJoystick(event.clientX, event.clientY);
+      const point = this.getControlPoint(event);
+      this.updateJoystick(point.x, point.y);
       return;
     }
     if (event.pointerId === this.lookPointerId) {
-      const dx = event.clientX - this.lookLastX;
-      const dy = event.clientY - this.lookLastY;
-      this.lookLastX = event.clientX;
-      this.lookLastY = event.clientY;
+      const point = this.getControlPoint(event);
+      const dx = point.x - this.lookLastX;
+      const dy = point.y - this.lookLastY;
+      this.lookLastX = point.x;
+      this.lookLastY = point.y;
       if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
         this.lookMoved = true;
       }
