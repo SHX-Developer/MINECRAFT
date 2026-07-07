@@ -1,0 +1,4 @@
+services:
+  shx-craft:
+    ports:
+      - "${APP_PORT:-8080}:80"

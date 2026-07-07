@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  docker:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose -f docker-compose.yml config
+
+      - name: Build image
+        run: docker build -t shx-craft:test .
+
+      - name: Run container
+        run: docker run --rm -d --name shx-craft-test -p 8080:80 shx-craft:test
+
+      - name: Smoke test
+        run: |
+          set -e
+          sleep 2
+          curl -fsS http://127.0.0.1:8080/healthz
+          curl -fsS http://127.0.0.1:8080/ | grep -q "SHX CRAFT"
+          curl -fsSI http://127.0.0.1:8080/src/main.js | grep -qi "content-type:.*javascript"
+
+      - name: Container logs
+        if: always()
+        run: docker logs shx-craft-test || true
+
+      - name: Stop container
+        if: always()
+        run: docker stop shx-craft-test || true
+
+  deploy:
+    name: Trigger Dokploy
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Trigger Dokploy webhook
+        env:
+          DOKPLOY_DEPLOY_WEBHOOK: ${{ secrets.DOKPLOY_DEPLOY_WEBHOOK }}
+        run: |
+          if [ -z "$DOKPLOY_DEPLOY_WEBHOOK" ]; then
+            echo "DOKPLOY_DEPLOY_WEBHOOK is not set. Skipping Dokploy webhook trigger."
+            exit 0
+          fi
+
+          curl -fsS -X POST "$DOKPLOY_DEPLOY_WEBHOOK"
